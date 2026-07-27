@@ -1,0 +1,76 @@
+name: Deploy to Staging
+
+# Runs only after a push lands on main (i.e. after a PR merge), and only once CI has a
+# chance to run on that same commit via the workflow_run trigger below — this keeps
+# "tests passed" and "deploy happened" as two separate, auditable facts.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Compute image tag
+        id: meta
+        run: |
+          SHORT_SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-7)
+          echo "image_tag=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # Two tags: an immutable sha tag (this IS "last known good" for rollback,
+          # see docs/rule.md rollback plan) and a floating staging-latest tag.
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.image_tag }}
+            ghcr.io/${{ github.repository }}:staging-latest
+
+  deploy-staging:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: staging   # secrets scoped to this environment only, per docs/rule.md
+    steps:
+      - name: Deploy image to staging
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          STAGING_DEPLOY_TOKEN: ${{ secrets.STAGING_DEPLOY_TOKEN }}
+        run: |
+          echo "Deploying ghcr.io/${{ github.repository }}:${{ needs.build-and-push.outputs.image_tag }} to staging"
+          # Placeholder for the real deploy call — swap in your platform's CLI/API, e.g.:
+          #   flyctl deploy --image ghcr.io/${{ github.repository }}:${{ needs.build-and-push.outputs.image_tag }} --app my-app-staging
+          #   or: aws ecs update-service --force-new-deployment ...
+          # Kept as a placeholder since the target platform isn't fixed for this repo —
+          # see README "Wiring up a real deploy target" for the two-line change needed.
+
+      - name: Smoke test staging health endpoint
+        run: |
+          echo "Would curl https://staging.example.com/v1/health and fail the job on non-200"
+          # curl -f https://staging.example.com/v1/health
+
+  # NOTE: Production is intentionally NOT deployed automatically here.
+  # Promotion to production is a deliberate manual step (docs/architecture.md §4,
+  # docs/phases.md Phase 4) — re-tag the exact staging image that was smoke-tested and
+  # promote it, rather than rebuilding, so staging and production run byte-identical images.

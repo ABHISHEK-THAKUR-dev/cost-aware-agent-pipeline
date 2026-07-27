@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  lint-test-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint (ruff)
+        run: ruff check app/ tests/
+
+      - name: Static security scan (bandit)
+        run: bandit -r app/ -q
+
+      - name: Dependency vulnerability scan (pip-audit)
+        run: pip-audit -r requirements.txt
+
+      - name: Run tests
+        env:
+          # Dummy values only — tests mock every NIM call, no real secret needed.
+          # See docs/rule.md Secrets rule and tests/conftest.py.
+          NVIDIA_API_KEY: "ci-test-key-not-real"
+          NIM_MODEL_SMALL: "test/small-model"
+          NIM_MODEL_LARGE: "test/large-model"
+          ENVIRONMENT: "test"
+          API_KEYS: "test-client-key"
+        run: pytest tests/ -v
