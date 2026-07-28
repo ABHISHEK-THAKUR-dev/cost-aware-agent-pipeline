@@ -57,9 +57,9 @@ jobs:
         env:
           RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
         run: |
-          echo "Triggering Render deploy for ghcr.io/${{ github.repository }}:${{ needs.build-and-push.outputs.image_tag }}"
-          curl -f -X POST "$RENDER_DEPLOY_HOOK_URL"
-
+          echo "Triggering Render deploy for ghcr.i
+o/${{ github.repository }}:${{ needs.build-and-push.outputs.image_tag }}"
+          curl -f "$RENDER_DEPLOY_HOOK_URL"
       - name: Wait for deploy to roll out
         run: sleep 45
 
