@@ -28,7 +28,9 @@ jobs:
         id: meta
         run: |
           SHORT_SHA=$(echo "${{ github.event.workflow_run.head_sha }}" | cut -c1-7)
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           echo "image_tag=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "repo_lower=$REPO_LOWER" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -43,8 +45,8 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.image_tag }}
-            ghcr.io/${{ github.repository }}:staging-latest
+            ghcr.io/${{ steps.meta.outputs.repo_lower }}:${{ steps.meta.outputs.image_tag }}
+            ghcr.io/${{ steps.meta.outputs.repo_lower }}:staging-latest
 
   deploy-staging:
     needs: build-and-push
