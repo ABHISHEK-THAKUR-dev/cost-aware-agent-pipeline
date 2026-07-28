@@ -33,9 +33,8 @@ def _client() -> OpenAI:
         base_url=settings.nim_base_url,
         api_key=settings.nvidia_api_key,
         timeout=settings.nim_timeout_seconds,
+        max_retries=0,  # nim_client.py's own retry loop handles this — avoid stacking retries
     )
-
-
 def call_nim(
     *,
     model: str,
