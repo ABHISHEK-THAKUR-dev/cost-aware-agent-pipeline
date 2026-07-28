@@ -3,22 +3,10 @@
 A small, real FastAPI service demonstrating three things together: **token/cost-aware agent
 design**, **debuggable multi-step pipelines**, and **disciplined CI/CD** — built on the
 NVIDIA NIM API. This was built for a technical interview assignment; every claim below is
-backed by code in this repo, not just prose.
+backed by code in this repo and a real, live deployment, not just prose.
 
-```
-docs/
-  prd.md            what this is and why, success metrics
-  architecture.md    system design, request flow, trust boundaries
-  rule.md            agent operating rules + security rules (rate limit, validation,
-                      secrets, dependency scanning, error handling, upload safety)
-  design.md          NIM integration details, tiered-model routing, reliability patterns
-  memory.md          the actual token-optimization design (Part 1 of the assignment)
-  phases.md          what's built vs. deliberately deferred, and why
-app/                 the service itself
-tests/               15 tests covering pipeline behavior, security, and the API layer
-.github/workflows/   CI (lint/test/scan) and CD (build + deploy to staging)
-```
-
+**Live staging:** `https://cost-aware-agent-pipeline.onrender.com` — try
+`https://cost-aware-agent-pipeline.onrender.com/docs` directly.
 Read `docs/` in that order — `prd.md` → `architecture.md` → `memory.md` → `rule.md` →
 `design.md` → `phases.md` — it's written to build up the picture piece by piece, the same way
 I'd walk through it on a call.
@@ -37,11 +25,11 @@ both implemented in `app/pipeline.py`:
 3. **(Bonus) Tiered model routing.** PLAN/RETRIEVE/FORMAT run on a small NIM model; only REASON
    uses the larger one — cost drops even before token count does.
 
-Measured with a mocked NIM client (`tests/test_pipeline.py`), a query against a large supplied
-document goes from "raw content repeated at every step" to "summarized once, referenced after"
-— see the before/after table in `docs/memory.md` §5 for the full breakdown and the quality
-tradeoff of each change (mainly: summarization can drop a fine detail the summarizer didn't
-flag, mitigated by the on-demand raw-context escape hatch rather than deleting it outright).
+Measured against a live NIM call (not just mocked), a full 4-step run against a supplied
+document came in at **684 total input tokens** — see the before/after table in
+`docs/memory.md` §5 for the full breakdown and the quality tradeoff of each change (mainly:
+summarization can drop a fine detail the summarizer didn't flag, mitigated by the on-demand
+raw-context escape hatch rather than deleting it outright).
 
 `tests/test_pipeline.py::test_raw_retrieved_content_not_sent_to_reason_step` is a regression
 guard specifically for this — it fails if someone reintroduces the "just concatenate
@@ -65,13 +53,34 @@ The debugging process this repo is built to support:
    response: `app/errors.py`. There's no code path where an error is swallowed and a default
    value returned instead, which is usually how "silently succeeds with wrong data" happens.
 
+### Real debugging log from building this
+
+The process above isn't hypothetical — building and deploying this exact repo required working
+through several real, live issues, each isolated the way `docs/design.md` describes: read the
+actual error first, form one specific hypothesis, test it, move on only once ruled out.
+
+| Symptom | Root cause | Fix |
+| --- | --- | --- |
+| `502` on `/v1/query`, generic error to client | Wrong NIM model ID (upstream returned 404) | Confirmed the exact model ID from NVIDIA's own catalog page instead of guessing |
+| Request hung 190+ seconds before failing | Two retry layers stacked — the OpenAI SDK's own retries plus this repo's manual retry loop | Set `max_retries=0` on the SDK client so only one retry layer runs |
+| CI failed: `ModuleNotFoundError: No module named 'app'` | `pytest` invoked directly instead of `python -m pytest`, so the project root wasn't on the import path | Changed CI's test step to `python -m pytest` |
+| Docker build failed: `repository name must be lowercase` | GHCR image tags were built from `github.repository`, which includes the (mixed-case) GitHub username | Lowercased the repo name in a dedicated workflow step before tagging |
+| Deploy hook call failed with HTTP 405 | Used `curl -X POST`; Render's deploy hooks expect `GET` | Removed `-X POST` — curl defaults to GET |
+| Workflow failed to even parse: `error in your yaml syntax` | An echo string got split across two lines during a manual edit, breaking YAML's block-literal indentation | Rewrote the step as a single-line string |
+
 ## Part 3 — CI/CD (see `.github/workflows/`)
 
 - `ci.yml` — on every push: ruff lint, bandit static security scan, pip-audit dependency scan,
   full test suite. All four gate merges; none are advisory-only.
 - `deploy-staging.yml` — triggers after CI succeeds on `main`, builds a Docker image tagged
-  with the commit SHA (this tag *is* "last known good" for rollback), pushes to GHCR, deploys
-  to staging, then smoke-tests `/v1/health`.
+  with the commit SHA (this tag *is* "last known good" for rollback), pushes to GHCR, triggers
+  a real deploy on Render via a deploy hook, waits for rollout, then smoke-tests `/v1/health`
+  against the live staging URL. This is a real, live deployment — see the staging URL at the
+  top of this README.
+- `main` is protected by a GitHub ruleset: pull requests are required, the `CI` status check
+  must pass before a PR can merge, force pushes are blocked, and branch deletion is restricted.
+  Every fix from a certain point in this repo's history went through that PR flow, visible in
+  the commit and PR history on GitHub — including every fix in the debugging log above.
 - **Production is not auto-deployed.** Promotion is a deliberate manual step that re-tags the
   already-smoke-tested staging image — see `docs/phases.md` Phase 4 for why, and `docs/rule.md`
   for the rollback plan this makes possible.
@@ -86,11 +95,11 @@ The debugging process this repo is built to support:
 ## Security (see `docs/rule.md` §B — all implemented, not just described)
 
 | Requirement | Where |
-|---|---|
+| --- | --- |
 | Rate limiting | `app/security.py::TokenBucketLimiter`, per-API-key, 429 + `Retry-After` |
 | Input validation | `app/schemas.py` (pydantic), reject-not-sanitize |
-| Secrets | `app/config.py` (env-only), `.env` git-ignored, GH Actions encrypted secrets |
-| Dependency vulnerabilities | `pip-audit` in CI, Dependabot weekly PRs — **caught and fixed two real CVEs during this build** (see below) |
+| Secrets | `app/config.py` (env-only), `.env` git-ignored, GH Actions encrypted secrets scoped per environment |
+| Dependency vulnerabilities | `pip-audit` in CI, Dependabot weekly PRs — **caught and fixed real CVEs during this build** (see below) |
 | Error handling / info leakage | `app/errors.py` — generic bodies + `trace_id`, no stack traces to client |
 | File upload safety | `app/security.py::validate_and_store_upload` — extension allow-list, size cap enforced during streaming read, server-generated filenames (no path traversal), no execution/deserialization of content |
 
@@ -103,6 +112,9 @@ the audit, and it came back clean. That's the workflow working as intended, not 
 making the upload directory configurable, not hardcoded) and use of `random` for retry jitter
 (swapped to `secrets.randbelow`, since consistent tooling here avoids the false-flag even
 though retry jitter has no real security sensitivity).
+
+Both `/v1/upload`'s accept and reject paths were verified live: a `.txt` file uploads and
+stores successfully (200), a `.jpg` file is rejected before it ever reaches disk (415).
 
 ## Running it
 
@@ -123,23 +135,17 @@ curl -X POST localhost:8000/v1/query \
 Tests (no real NIM key needed — every model call is mocked):
 
 ```bash
-pytest tests/ -v
-ruff check app/ tests/
-bandit -r app/
-pip-audit -r requirements.txt
+python -m pytest tests/ -v
+python -m ruff check app/ tests/
+python -m bandit -r app/
+python -m pip_audit -r requirements.txt
 ```
-
-## Wiring up a real deploy target
-
-`deploy-staging.yml` builds and pushes a tagged image to GHCR; the actual "deploy this image
-somewhere" step is left as a documented placeholder because the target platform (Fly, ECS,
-Render, a VM, etc.) wasn't specified for this exercise. Swapping in a real target is a two-line
-change: replace the placeholder `run:` block with your platform's CLI/API call referencing the
-same `needs.build-and-push.outputs.image_tag`, and point the smoke-test `curl` at your real
-staging URL.
 
 ## What I'd do next
 
 See `docs/phases.md` in full, but top of the list: wire a fixed eval set into CI so any change
 to `app/pipeline.py` or the memory/pruning logic is quality-gated automatically, not just
-token-gated — a cost win that quietly breaks answer quality isn't actually a win.
+token-gated — a cost win that quietly breaks answer quality isn't actually a win. After that,
+add code owners / required reviewers to the branch ruleset once this is a team project rather
+than a solo one, and formalize the rollback plan into an actual one-command script rather than
+documented manual steps.
