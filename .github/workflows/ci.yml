@@ -39,4 +39,4 @@ jobs:
           NIM_MODEL_LARGE: "test/large-model"
           ENVIRONMENT: "test"
           API_KEYS: "test-client-key"
-        run: pytest tests/ -v
+        run: python -m pytest tests/ -v
