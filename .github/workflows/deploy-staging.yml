@@ -42,8 +42,6 @@ jobs:
         with:
           context: .
           push: true
-          # Two tags: an immutable sha tag (this IS "last known good" for rollback,
-          # see docs/rule.md rollback plan) and a floating staging-latest tag.
           tags: |
             ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.image_tag }}
             ghcr.io/${{ github.repository }}:staging-latest
@@ -51,24 +49,23 @@ jobs:
   deploy-staging:
     needs: build-and-push
     runs-on: ubuntu-latest
-    environment: staging   # secrets scoped to this environment only, per docs/rule.md
+    environment: staging
     steps:
-      - name: Deploy image to staging
+      - name: Trigger Render deploy
         env:
-          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-          STAGING_DEPLOY_TOKEN: ${{ secrets.STAGING_DEPLOY_TOKEN }}
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
         run: |
-          echo "Deploying ghcr.io/${{ github.repository }}:${{ needs.build-and-push.outputs.image_tag }} to staging"
-          # Placeholder for the real deploy call — swap in your platform's CLI/API, e.g.:
-          #   flyctl deploy --image ghcr.io/${{ github.repository }}:${{ needs.build-and-push.outputs.image_tag }} --app my-app-staging
-          #   or: aws ecs update-service --force-new-deployment ...
-          # Kept as a placeholder since the target platform isn't fixed for this repo —
-          # see README "Wiring up a real deploy target" for the two-line change needed.
+          echo "Triggering Render deploy for ghcr.io/${{ github.repository }}:${{ needs.build-and-push.outputs.image_tag }}"
+          curl -f -X POST "$RENDER_DEPLOY_HOOK_URL"
+
+      - name: Wait for deploy to roll out
+        run: sleep 45
 
       - name: Smoke test staging health endpoint
+        env:
+          STAGING_URL: ${{ vars.STAGING_URL }}
         run: |
-          echo "Would curl https://staging.example.com/v1/health and fail the job on non-200"
-          # curl -f https://staging.example.com/v1/health
+          curl -f "$STAGING_URL/v1/health"
 
   # NOTE: Production is intentionally NOT deployed automatically here.
   # Promotion to production is a deliberate manual step (docs/architecture.md §4,
